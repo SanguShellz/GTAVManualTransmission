@@ -36,6 +36,7 @@ namespace {
     int currentGearOffset = 0;
     int topGearOffset = 0;
     int gearRatiosOffset = 0;
+    bool gearRatiosOffsetValidated = false;
     int driveForceOffset = 0;
     int initialDriveMaxFlatVelOffset = 0;
     int driveMaxFlatVelOffset = 0;
@@ -166,8 +167,36 @@ void VehicleExtensions::Init() {
     logger.Write(gearRatiosOffset == 0 ? WARN : DEBUG, "Gear Ratios Offset: 0x%X", gearRatiosOffset);
 
     if (g_gameVersion >= G_VER_1_0_1604_0_STEAM) {
+        // Primary pattern: valid b1604 through b3028
         addr = mem::FindPattern("\xF3\x0F\x10\x8F\xA4\x08\x00\x00\xF3\x0F\x5E\xF0\x41\x0F\x2F\xCA", "xxxx????xxx?xxx?");
         driveForceOffset = addr == 0 ? 0 : *(int*)(addr + 4);
+
+        // Fallback #1: broader mask, catches compiler variants in b3028-b3095 range (e.g. b3051)
+        // movss xmm1, [r?x + fDriveForce_offset]  followed by divss / comiss
+        if (driveForceOffset == 0) {
+            addr = mem::FindPattern("\xF3\x0F\x10\x8F\x00\x00\x00\x00\xF3\x0F\x5E\xF0", "xxxx????xxxx");
+            driveForceOffset = addr == 0 ? 0 : *(int*)(addr + 4);
+            logger.Write(driveForceOffset == 0 ? WARN : DEBUG,
+                "Drive Force Offset (fallback #1, rcx variant): 0x%X", driveForceOffset);
+        }
+
+        // Fallback #2: rdi-register variant that appears in some b3028-b3095 builds
+        // movss xmm0, [rdi + fDriveForce_offset]  followed by divss
+        if (driveForceOffset == 0) {
+            addr = mem::FindPattern("\xF3\x0F\x10\x87\x00\x00\x00\x00\xF3\x0F\x5E\xC6", "xxxx????xxxx");
+            driveForceOffset = addr == 0 ? 0 : *(int*)(addr + 4);
+            logger.Write(driveForceOffset == 0 ? WARN : DEBUG,
+                "Drive Force Offset (fallback #2, rdi variant): 0x%X", driveForceOffset);
+        }
+
+        // Fallback #3: scan for fDriveForce store pattern (movss [reg+off], xmm?)
+        // This covers cases where the load instruction changed register entirely
+        if (driveForceOffset == 0) {
+            addr = mem::FindPattern("\xF3\x44\x0F\x11\x8F\x00\x00\x00\x00", "xxxxx????");
+            driveForceOffset = addr == 0 ? 0 : *(int*)(addr + 5);
+            logger.Write(driveForceOffset == 0 ? WARN : DEBUG,
+                "Drive Force Offset (fallback #3, store variant): 0x%X", driveForceOffset);
+        }
     }
     else {
         driveForceOffset = addr == 0 ? 0 : *(int*)(addr + 3) + 0x28;
@@ -354,6 +383,7 @@ void VehicleExtensions::Init() {
 }
 
 BYTE *VehicleExtensions::GetAddress(Vehicle handle) {
+    if (!mem::GetAddressOfEntity) return nullptr;
     return reinterpret_cast<BYTE *>(mem::GetAddressOfEntity(handle));
 }
 
@@ -480,10 +510,38 @@ float* VehicleExtensions::GetGearRatioPtr(Vehicle handle, uint8_t gear) {
 std::vector<float> VehicleExtensions::GetGearRatios(Vehicle handle) {
     if (gearRatiosOffset == 0) return {};
     auto address = GetAddress(handle);
-    std::vector<float> ratios(GetTopGear(handle) + 1);
-    for (int gear = 0; gear < GetTopGear(handle) + 1; ++gear) {
+    int topGear = GetTopGear(handle);
+    std::vector<float> ratios(topGear + 1);
+    for (int gear = 0; gear < topGear + 1; ++gear) {
         ratios[gear] = *reinterpret_cast<float *>(address + gearRatiosOffset + gear * sizeof(float));
     }
+
+    // Self-correcting validation: 1st gear (index 1) must always be a positive
+    // forward ratio for any real vehicle. If it reads negative, the array is
+    // misaligned by exactly one float -- confirmed via live telemetry to be the
+    // case on b3051, where index 1 returns the Reverse ratio instead. This is
+    // checked against the data directly rather than g_gameVersion, since
+    // VehicleExtensions::SetVersion() is never called anywhere in script.cpp,
+    // making g_gameVersion unreliable (stuck at its static-initializer value).
+    if (!gearRatiosOffsetValidated) {
+        if (topGear >= 1 && ratios.size() > 1 && ratios[1] < 0.0f) {
+            logger.Write(WARN,
+                "Gear Ratios Offset 0x%X corrected by one float for b3751 (ratio was %.3f, now 0x%X)",
+    gearRatiosOffset, ratios[1], gearRatiosOffset + static_cast<int>(sizeof(float)));
+            gearRatiosOffset += static_cast<int>(sizeof(float));
+            for (int gear = 0; gear < topGear + 1; ++gear) {
+                ratios[gear] = *reinterpret_cast<float *>(address + gearRatiosOffset + gear * sizeof(float));
+            }
+            gearRatiosOffsetValidated = true;
+        }
+        else if (topGear >= 1 && ratios.size() > 1) {
+            // 1st gear ratio already positive -- offset is correct, nothing to do.
+            gearRatiosOffsetValidated = true;
+        }
+        // else: topGear not yet available (vehicle not fully spawned/loaded) --
+        // leave unvalidated and retry on a later call.
+    }
+
     return ratios;
 }
 
