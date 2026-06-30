@@ -185,14 +185,6 @@ bool ApplyGearboxPatches() {
         return true;
     }
 
-    if (ClutchLowRPMPatcher.Patch()) {
-        NumGearboxPatched++;
-    }
-
-    if (ClutchRevLimPatcher.Patch()) {
-        NumGearboxPatched++;
-    }
-
     if (ShiftDownPatcher.Patch()) {
         NumGearboxPatched++;
     }
@@ -202,6 +194,14 @@ bool ApplyGearboxPatches() {
     }
 
     if (ThrottleLiftPatcher.Patch()) {
+        NumGearboxPatched++;
+    }
+
+    if (ClutchLowRPMPatcher.Patch()) {
+        NumGearboxPatched++;
+    }
+
+    if (ClutchRevLimPatcher.Patch()) {
         NumGearboxPatched++;
     }
 
@@ -228,15 +228,15 @@ bool RevertGearboxPatches() {
         return true;
     }
 
-    if (ClutchLowRPMPatcher.Restore()) {
-        NumGearboxPatched--;
-    }
-
     if (ClutchRevLimPatcher.Restore()) {
         NumGearboxPatched--;
     }
 
-    if (ShiftDownPatcher.Restore()) {
+    if (ClutchLowRPMPatcher.Restore()) {
+        NumGearboxPatched--;
+    }
+
+    if (ThrottleLiftPatcher.Restore()) {
         NumGearboxPatched--;
     }
 
@@ -244,7 +244,7 @@ bool RevertGearboxPatches() {
         NumGearboxPatched--;
     }
 
-    if (ThrottleLiftPatcher.Restore()) {
+    if (ShiftDownPatcher.Restore()) {
         NumGearboxPatched--;
     }
 
