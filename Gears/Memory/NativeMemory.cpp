@@ -33,10 +33,34 @@ namespace mem {
     uintptr_t(*GetModelInfo)(unsigned int modelHash, int* index) = nullptr;
 
     void init() {
-        auto addr = FindPattern("\x83\xF9\xFF\x74\x31\x4C\x8B\x0D\x00\x00\x00\x00\x44\x8B\xC1\x49\x8B\x41\x08",
-                                                            "xxxxxxxx????xxxxxxx");
-        if (!addr) logger.Write(ERROR, "Couldn't find GetAddressOfEntity");
-        GetAddressOfEntity = reinterpret_cast<uintptr_t(*)(int)>(addr);
+        // Resolve via ScriptHookV export - avoids pattern scanning that breaks on game updates
+        HMODULE shv = GetModuleHandleA("ScriptHookV.dll");
+        if (!shv) {
+            logger.Write(ERROR, "GetAddressOfEntity: ScriptHookV.dll handle not found");
+        } else {
+            logger.Write(INFO, "GetAddressOfEntity: ScriptHookV.dll handle OK (0x%p)", shv);
+            auto shvFn = GetProcAddress(shv, "?getScriptHandleBaseAddress@@YAPEAEH@Z");
+            if (!shvFn) {
+                logger.Write(ERROR, "GetAddressOfEntity: getScriptHandleBaseAddress export not found in SHV");
+            } else {
+                logger.Write(INFO, "GetAddressOfEntity: getScriptHandleBaseAddress resolved OK (0x%p)", shvFn);
+                GetAddressOfEntity = reinterpret_cast<uintptr_t(*)(int)>(shvFn);
+            }
+        }
+        // Fallback: pattern scan for environments without the SHV export
+        uintptr_t addr = 0;
+        if (!GetAddressOfEntity) {
+            logger.Write(WARN, "GetAddressOfEntity: falling back to pattern scan");
+            addr = FindPattern("\x83\xF9\xFF\x74\x31\x4C\x8B\x0D\x00\x00\x00\x00\x44\x8B\xC1\x49\x8B\x41\x08",
+                                                                "xxxxxxxx????xxxxxxx");
+            if (addr) {
+                logger.Write(INFO, "GetAddressOfEntity: pattern scan succeeded (0x%p)", addr);
+                GetAddressOfEntity = reinterpret_cast<uintptr_t(*)(int)>(addr);
+            } else {
+                logger.Write(ERROR, "GetAddressOfEntity: pattern scan also failed");
+            }
+        }
+        if (!GetAddressOfEntity) logger.Write(ERROR, "Couldn't find GetAddressOfEntity");
 
         if (g_gameVersion < 58) {
             addr = FindPattern(
